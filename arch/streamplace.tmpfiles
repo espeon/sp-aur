@@ -1,0 +1,25 @@
+# Streamplace tmpfiles configuration
+# This file creates necessary runtime directories and sets permissions
+# Place in /usr/lib/tmpfiles.d/streamplace.conf
+
+# Runtime directories
+d /run/streamplace 0755 streamplace streamplace - -
+d /run/streamplace/sockets 0750 streamplace streamplace - -
+
+# State directories
+d /var/lib/streamplace 0755 streamplace streamplace - -
+d /var/lib/streamplace/recordings 0755 streamplace streamplace - -
+d /var/lib/streamplace/tmp 0755 streamplace streamplace - -
+d /var/lib/streamplace/cache 0755 streamplace streamplace - -
+
+# Configuration directories
+d /etc/streamplace 0755 root streamplace - -
+
+# Log directories
+d /var/log/streamplace 0755 streamplace streamplace - -
+
+# Lock files
+f /run/lock/streamplace.lock 0644 streamplace streamplace - -
+
+# PID file
+f /run/streamplace/streamplace.pid 0644 streamplace streamplace - -

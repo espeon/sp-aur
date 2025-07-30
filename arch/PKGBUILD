@@ -1,0 +1,434 @@
+# Maintainer: Natalie Bridgers <natalie@stream.place>
+pkgname=streamplace-git
+pkgver=r883.bd58320b
+pkgrel=1
+pkgdesc="Live video for the AT Protocol. Solving video for everybody forever."
+arch=('x86_64' 'aarch64')
+url="https://stream.place"
+license=('MIT')
+install=streamplace.install
+provides=('streamplace')
+conflicts=('streamplace')
+depends=(
+    'gstreamer'
+    'gst-plugins-base'
+    'gst-plugins-good'
+    'gst-plugins-bad'
+    'gst-plugins-ugly'
+    'gst-libav'
+    'ffmpeg'
+    'glib2'
+    'openssl'
+)
+makedepends=(
+    'go>=1.24'
+    'meson'
+    'ninja'
+    'gcc'
+    'pkgconf'
+    'cmake'
+    'nasm'
+    'yasm'
+    'rust'
+    'cargo'
+    'git'
+    'python'
+    'gettext'
+    'libxcb'
+    'nvm'
+    'pnpm'
+)
+backup=(
+    'etc/streamplace/environment'
+)
+source=(
+    "git+https://github.com/streamplace/streamplace.git#branch=next"
+    "streamplace.service"
+    "environment.example"
+    "streamplace.tmpfiles"
+    "streamplace.sysusers"
+)
+sha256sums=(
+    'SKIP'
+    'SKIP'
+    'SKIP'
+    'SKIP'
+    'SKIP'
+)
+options=('!strip' '!debug')
+
+pkgver() {
+    cd "$srcdir/streamplace"
+    printf "r%s.%s" "$(git rev-list --count HEAD)" "$(git rev-parse --short HEAD)"
+}
+
+_ensure_local_nvm() {
+  # lets be sure we are starting clean
+  which nvm >/dev/null 2>&1 && nvm deactivate && nvm unload
+
+  export NVM_DIR="${srcdir}/streamplace/.nvm"
+  # The init script returns 3 if version
+  #   specified in ./.nvrc is not (yet) installed in $NVM_DIR
+  #   but nvm itself still gets loaded ok
+  source /usr/share/nvm/init-nvm.sh || [[ $? != 1 ]]
+}
+
+prepare() {
+    cd "$srcdir/streamplace"
+
+    echo "Streamplace is in $srcdir"
+
+    _ensure_local_nvm
+
+    # Download fresh complete repository for git.go to work properly
+    msg2 "Downloading complete repository..."
+    cd "$srcdir"
+    rm -rf streamplace
+    git clone --depth=1 --branch=next https://github.com/streamplace/streamplace.git
+    cd streamplace
+
+
+
+    nvm install 22
+    nvm use 22
+
+    # Create temporary directories for lexicons
+    mkdir -p "$srcdir/go-tmp"
+
+    # Set up proper Node.js version check bypass for build environment
+    export NODE_VERSION=$(node --version | sed 's/v//')
+}
+
+build() {
+    cd "$srcdir/streamplace"
+
+    # Set CI environment variables for git.go
+    # Set CI_COMMIT_TAG to prevent "object not found" error when git.go searches for tags
+    GIT_VERSION=$(git describe --tags HEAD 2>/dev/null || echo "v0.0.0-$(git rev-parse --short HEAD)")
+    export CI_COMMIT_BRANCH="next"
+    export CI_COMMIT_TAG="$GIT_VERSION"
+
+    # Set Go environment
+    export GOPATH="$srcdir/go"
+    export GOCACHE="$srcdir/go-cache"
+    export GOTMPDIR="$srcdir/go-tmp"
+    export CGO_ENABLED=1
+    export CGO_CPPFLAGS="${CPPFLAGS}"
+    export CGO_CFLAGS="${CFLAGS}"
+    export CGO_CXXFLAGS="${CXXFLAGS}"
+    export CGO_LDFLAGS="${LDFLAGS}"
+
+    # Set build directory based on architecture
+    case "$CARCH" in
+        x86_64)
+            export BUILDDIR="build-linux-amd64"
+            ;;
+        aarch64)
+            export BUILDDIR="build-linux-arm64"
+            ;;
+    esac
+
+    # Set Node.js memory limits to prevent heap out of memory
+    export NODE_OPTIONS="--max-old-space-size=5012"
+
+    # Patch git.go to use regular git commands instead of go-git library
+    msg2 "Patching git.go to bypass go-git library..."
+    cp pkg/config/git/git.go pkg/config/git/git.go.backup
+
+    cat > pkg/config/git/git.go << 'EOF'
+package main
+
+import (
+	"flag"
+	"fmt"
+	"os"
+	"os/exec"
+	"strconv"
+	"strings"
+	"time"
+	"github.com/google/uuid"
+)
+
+func main() {
+	err := makeGit()
+	if err != nil {
+		panic(err)
+	}
+}
+
+var tmpl = `package main
+
+var Version = "%s"
+var BuildTime = "%d"
+var UUID = "%s"
+`
+
+var tmplJS = `
+export const version = "%s";
+export const buildTime = "%d";
+export const uuid = "%s";
+`
+
+func gitCmd(args ...string) (string, error) {
+	cmd := exec.Command("git", args...)
+	output, err := cmd.Output()
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(output)), nil
+}
+
+func makeGit() error {
+	output := flag.String("o", "", "file to output to")
+	version := flag.Bool("v", false, "just print version")
+	env := flag.Bool("env", false, "print a bunch of useful environment variables")
+	doBranch := flag.Bool("branch", false, "print branch")
+	_ = flag.Bool("release", false, "print release json file")
+	javascript := flag.Bool("js", false, "print code in javascript format")
+
+	flag.Parse()
+
+	// Get version using git describe
+	desc, err := gitCmd("describe", "--tags", "HEAD")
+	if err != nil {
+		// Fallback to short hash if no tags
+		hash, hashErr := gitCmd("rev-parse", "--short", "HEAD")
+		if hashErr != nil {
+			return hashErr
+		}
+		desc = "v0.0.0-" + hash
+	}
+
+	// Get commit timestamp
+	timestampStr, err := gitCmd("show", "-s", "--format=%ct", "HEAD")
+	if err != nil {
+		return err
+	}
+	ts, err := strconv.ParseInt(timestampStr, 10, 64)
+	if err != nil {
+		ts = time.Now().Unix()
+	}
+
+	// Generate UUID
+	u, err := uuid.NewRandom()
+	if err != nil {
+		return err
+	}
+
+	var out string
+	if *version {
+		out = desc
+	} else if *doBranch {
+		out = branch()
+	} else if *env {
+		out = fmt.Sprintf("STREAMPLACE_VERSION=%s\nSTREAMPLACE_BRANCH=%s\n", desc, branch())
+	} else if *javascript {
+		out = fmt.Sprintf(tmplJS, desc, ts, u)
+	} else {
+		out = fmt.Sprintf(tmpl, desc, ts, u)
+	}
+
+	if *output != "" {
+		if err := os.WriteFile(*output, []byte(out), 0644); err != nil {
+			return err
+		}
+	} else {
+		fmt.Print(out)
+	}
+	return nil
+}
+
+func branch() string {
+	CICommitTag := os.Getenv("CI_COMMIT_TAG")
+	CICommitBranch := os.Getenv("CI_COMMIT_BRANCH")
+	if CICommitTag != "" {
+		return "latest"
+	} else if CICommitBranch != "" {
+		return strings.ReplaceAll(CICommitBranch, "/", "-")
+	} else {
+		// Fallback to git command
+		branch, err := gitCmd("branch", "--show-current")
+		if err != nil {
+			return "main"
+		}
+		return branch
+	}
+}
+EOF
+
+    # Debug meson host detection issue and create cross file to force Linux host
+    msg2 "Debugging meson host detection..."
+    echo "Build machine: $(uname -m)"
+    echo "Host machine from meson: $CARCH"
+    echo "GOOS: ${GOOS:-unset}"
+    echo "GOARCH: ${GOARCH:-unset}"
+
+    # Create meson cross file to force correct host detection
+    cat > meson-cross.ini << EOF
+[host_machine]
+system = 'linux'
+cpu_family = '$([ "$CARCH" = "aarch64" ] && echo "aarch64" || echo "x86_64")'
+cpu = '$CARCH'
+endian = 'little'
+
+[target_machine]
+system = 'linux'
+cpu_family = '$([ "$CARCH" = "aarch64" ] && echo "aarch64" || echo "x86_64")'
+cpu = '$CARCH'
+endian = 'little'
+EOF
+
+    # Set Expo environment variables for CI/container builds
+    export EXPO_NO_TELEMETRY=1
+    export EXPO_NO_GIT_STATUS=1
+    export EXPO_SKIP_MANIFEST_VALIDATION_NGROK_TUNNEL_CHECK=1
+    export EXPO_NO_DOTENV=1
+    export CI=true
+
+    # Install Node.js dependencies with timeout
+    msg2 "Installing Node.js dependencies..."
+    timeout 600 pnpm install --frozen-lockfile || {
+        echo "pnpm install timed out or failed"
+        return 1
+    }
+
+    # Generate schema files with timeout
+    msg2 "Generating schema files..."
+    timeout 300 make schema || {
+        echo "Schema generation timed out or failed"
+        return 1
+    }
+
+    # Build the web application with timeout and debugging for specific pnpm commands
+    msg2 "Building web application..."
+
+    # First, let's see what make app actually does
+    echo "Checking what 'make app' will run..."
+    make -n app | head -20
+
+    # Set additional environment variables for pnpm/web builds
+    export PNPM_CONFIG_PROGRESS=false
+    export PNPM_CONFIG_REPORTER=silent
+    export EXPO_DEBUG=1
+
+    # Try to run the problematic commands individually with more debugging
+    msg2 "Running pnpm run build:web..."
+    timeout 600 pnpm run build || {
+        echo "pnpm run build:web failed or timed out"
+        echo "Process list:"
+        ps aux | grep -E "(node|npm|pnpm|expo)" || true
+        return 1
+    }
+
+    msg2 "Running pnpm run prebuild..."
+    timeout 300 pnpm run prebuild || {
+        echo "pnpm run prebuild failed or timed out"
+        echo "Process list:"
+        ps aux | grep -E "(node|npm|pnpm|expo)" || true
+        return 1
+    }
+
+    # If individual commands work, try the full make app
+    timeout 300 make app || {
+        echo "make app timed out or failed"
+        echo "Checking for stuck processes..."
+        ps aux | grep -E "(node|npm|pnpm|tsc)" || true
+        return 1
+    }
+
+    # Fix git remote for meson subprojects
+    git remote set-url origin https://github.com/streamplace/streamplace.git
+
+    git config --global --add safe.directory "$srcdir/streamplace"
+    git config --global --add safe.directory "$srcdir/streamplace/subprojects/FFmpeg"
+    git config --global --add safe.directory "$srcdir/streamplace/subprojects/gstreamer-full"
+    git config --global --add safe.directory "$srcdir/streamplace/subprojects/c2pa_go"
+    git config --global --add safe.directory "$srcdir/streamplace/subprojects/atproto"
+    git config --global --add safe.directory "$srcdir/streamplace/subprojects/mistserver"
+
+    # build breaks without this
+    git fetch --unshallow || true
+    git fetch --tags || true
+
+    # Download meson subprojects first for better control
+    # Skip mistserver since it's not used in the build (commented out in meson.build)
+    msg2 "Downloading meson subprojects..."
+    meson subprojects download ffmpeg gstreamer c2pa_go atproto
+
+    # for go-git
+    export CI_COMMIT_BRANCH="next"
+    export CI_COMMIT_TAG=""
+
+    # Set up meson build directory with proper options
+    msg2 "Setting up native build..."
+    meson setup "$BUILDDIR" \
+        --prefix=/usr \
+        --buildtype=release \
+        -Ddefault_library=static \
+        -Dauto_features=enabled \
+        --cross-file meson-cross.ini
+
+    # Build the native binary
+    msg2 "Building native binary..."
+    meson compile -C "$BUILDDIR" streamplace
+}
+
+check() {
+    cd "$srcdir/streamplace"
+
+    # Basic smoke test - check if binary was built
+    if [ ! -f "$BUILDDIR/streamplace" ]; then
+        error "streamplace binary was not built successfully"
+        return 1
+    fi
+
+    # Run Go tests (disabled by default due to complex setup requirements)
+    # make test || true
+}
+
+package() {
+    cd "$srcdir/streamplace"
+
+    # Set build directory based on architecture
+    case "$CARCH" in
+        x86_64)
+            BUILDDIR="build-linux-amd64"
+            ;;
+        aarch64)
+            BUILDDIR="build-linux-arm64"
+            ;;
+    esac
+
+    # Install the main binary
+    install -Dm755 "$BUILDDIR/streamplace" "$pkgdir/usr/bin/streamplace"
+
+    # Install systemd service files
+    install -Dm644 "$srcdir/streamplace.service" "$pkgdir/usr/lib/systemd/system/streamplace.service"
+
+    # Install tmpfiles configuration
+    install -Dm644 "$srcdir/streamplace.tmpfiles" "$pkgdir/usr/lib/tmpfiles.d/streamplace.conf"
+
+    # Install sysusers configuration
+    install -Dm644 "$srcdir/streamplace.sysusers" "$pkgdir/usr/lib/sysusers.d/streamplace.conf"
+
+    # Install default configuration
+    install -Dm644 "$srcdir/environment.example" "$pkgdir/etc/streamplace/environment.example"
+    install -Dm644 "$srcdir/environment.example" "$pkgdir/etc/streamplace/environment"
+
+    # Install web assets if they exist
+    if [ -d "js/app/dist" ]; then
+        install -dm755 "$pkgdir/usr/share/$pkgname"
+        cp -r js/app/dist/* "$pkgdir/usr/share/$pkgname/"
+    fi
+
+    # Install license
+    install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+
+    # Install documentation
+    install -Dm644 README.md "$pkgdir/usr/share/doc/$pkgname/README.md"
+
+    # Install logo if it exists
+    if [ -f "streamplace-logo.svg" ]; then
+        install -Dm644 streamplace-logo.svg "$pkgdir/usr/share/pixmaps/$pkgname.svg"
+    fi
+}

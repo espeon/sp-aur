@@ -1,0 +1,5 @@
+# Streamplace system user configuration
+# This file creates the streamplace system user for running the service
+# Place in /usr/lib/sysusers.d/streamplace.conf
+
+u streamplace - "Streamplace service user" /var/lib/streamplace /bin/nologin

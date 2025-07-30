@@ -1,0 +1,57 @@
+post_install() {
+    echo "==> Streamplace has been installed successfully!"
+
+    echo "==> Creating system user and directories..."
+    systemd-sysusers streamplace.conf
+    systemd-tmpfiles --create streamplace.conf
+
+    echo "==> Setup options:"
+    echo "    1. System service (runs as daemon): sudo systemctl enable --now streamplace"
+    echo "    2. User service (runs on login): systemctl --user enable --now streamplace"
+    echo ""
+    echo "==> Configuration:"
+    echo "    - System: /etc/streamplace/environment"
+    echo "    - User: ~/.config/streamplace/environment"
+    echo "    - Example config: /etc/streamplace/environment.example"
+    echo ""
+    echo "==> For camera/audio access, add your user to groups:"
+    echo "    sudo usermod -a -G video,audio \$USER"
+    echo ""
+    echo "==> Documentation: https://stream.place/docs"
+}
+
+post_upgrade() {
+    echo "==> Streamplace has been upgraded"
+    echo "==> Updating system user and directories..."
+    systemd-sysusers streamplace.conf
+    systemd-tmpfiles --create streamplace.conf
+
+    echo "==> Restarting services..."
+    if systemctl is-active --quiet streamplace; then
+        systemctl restart streamplace
+        echo "    System service restarted"
+    fi
+
+    echo "==> Please restart user services manually if running:"
+    echo "    systemctl --user restart streamplace"
+    echo ""
+    echo "==> Check documentation for breaking changes: https://stream.place/docs"
+}
+
+pre_remove() {
+    echo "==> Stopping Streamplace services..."
+    systemctl stop streamplace 2>/dev/null || true
+    systemctl disable streamplace 2>/dev/null || true
+}
+
+post_remove() {
+    echo "==> Streamplace has been removed"
+    echo "==> Preserved files:"
+    echo "    - System config: /etc/streamplace/"
+    echo "    - User config: ~/.config/streamplace/"
+    echo "    - Data directory: /var/lib/streamplace/"
+    echo ""
+    echo "==> To completely remove (WARNING: deletes all data):"
+    echo "    sudo rm -rf /etc/streamplace /var/lib/streamplace"
+    echo "    rm -rf ~/.config/streamplace ~/.local/share/streamplace"
+}
